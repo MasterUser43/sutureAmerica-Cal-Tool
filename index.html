@@ -1,0 +1,175 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Suture America Calendar Tool</title>
+    <style>
+        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; max-width: 800px; margin: 40px auto; padding: 20px; color: #333; line-height: 1.6; }
+        .card { border: 1px solid #ddd; padding: 25px; border-radius: 8px; box-shadow: 0 2px 10px rgba(0,0,0,0.05); }
+        h1 { color: #0073aa; margin-top: 0; }
+        button { padding: 12px 20px; font-size: 16px; font-weight: bold; margin: 10px 5px 10px 0; background: #0073aa; color: white; border: none; border-radius: 4px; cursor: pointer; transition: background 0.2s; }
+        button:hover { background: #005177; }
+        button#copyButton { background: #46b450; }
+        button#copyButton:hover { background: #3a9e43; }
+        #outputContainer { margin-top: 30px; }
+        #eventList { background-color: #f6f7f7; padding: 20px; white-space: pre-wrap; font-family: 'Courier New', Courier, monospace; border: 1px solid #ccc; border-radius: 4px; font-size: 14px; }
+        .status { padding: 10px; border-radius: 4px; margin: 10px 0; display: none; }
+        .success { background: #e7f5ea; color: #1e4620; display: block; border-left: 5px solid #46b450; }
+        .loading { background: #f0f7ff; color: #004a6b; display: block; border-left: 5px solid #0073aa; }
+        .error { background: #fcf0f1; color: #d63638; display: block; border-left: 5px solid #d63638; }
+        code { background: #eee; padding: 2px 5px; border-radius: 3px; font-size: 0.9em; }
+    </style>
+    <!-- Library to handle recurring events properly -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/ical.js/1.5.0/ical.min.js"></script>
+</head>
+<body>
+
+    <div class="card">
+        <h1>Calendar Event List Generator</h1>
+        <p>This tool fetches your Google Calendar and generates a clean list for the next 2 weeks.</p>
+        
+        <p><strong>Target Calendar:</strong> <code id="calIdDisplay">sutureamerica@gmail.com</code></p>
+        
+        <button id="fetchButton">Generate Event List</button>
+        
+        <div id="status" class="status"></div>
+        
+        <div id="outputContainer" style="display: none;">
+            <hr>
+            <h3>Generated List:</h3>
+            <button id="copyButton">Copy to Clipboard</button>
+            <div id="eventList"></div>
+        </div>
+    </div>
+
+    <script>
+        // --- CONFIGURATION ---
+        const CALENDAR_ID = 'sutureamerica@gmail.com';
+        const iCalFeedURL = `https://calendar.google.com/calendar/ical/${encodeURIComponent(CALENDAR_ID)}/public/basic.ics`;
+        
+        // Proxy list to bypass CORS issues
+        const PROXIES = [
+            'https://api.allorigins.win/raw?url=',
+            'https://api.codetabs.com/v1/proxy?quest=',
+            'https://corsproxy.io/?'
+        ];
+
+        const statusEl = document.getElementById('status');
+        const outputContainer = document.getElementById('outputContainer');
+        const eventListEl = document.getElementById('eventList');
+
+        async function fetchWithProxyFallback(url) {
+            for (let i = 0; i < PROXIES.length; i++) {
+                try {
+                    console.log(`Trying proxy ${i + 1}...`);
+                    const response = await fetch(PROXIES[i] + encodeURIComponent(url));
+                    if (!response.ok) continue;
+                    const data = await response.text();
+                    if (data.includes('BEGIN:VCALENDAR')) return data;
+                } catch (e) {
+                    console.warn(`Proxy ${i+1} failed`);
+                }
+            }
+            throw new Error('All connection attempts failed. Check if the calendar is set to "Public".');
+        }
+
+        document.getElementById('fetchButton').addEventListener('click', async () => {
+            statusEl.textContent = 'Connecting to Google Calendar...';
+            statusEl.className = 'status loading';
+            outputContainer.style.display = 'none';
+
+            try {
+                const icalData = await fetchWithProxyFallback(iCalFeedURL);
+                statusEl.textContent = 'Processing events...';
+
+                const jcalData = ICAL.parse(icalData);
+                const comp = new ICAL.Component(jcalData);
+                const vevents = comp.getAllSubcomponents('vevent');
+                
+                const now = new Date();
+                now.setHours(0, 0, 0, 0);
+                const twoWeeksOut = new Date();
+                twoWeeksOut.setDate(now.getDate() + 14);
+                twoWeeksOut.setHours(23, 59, 59, 999);
+
+                const allEvents = [];
+
+                vevents.forEach(vevent => {
+                    const event = new ICAL.Event(vevent);
+                    
+                    if (event.isRecurring()) {
+                        const it = event.iterator();
+                        let next;
+                        while ((next = it.next()) && next.toJSDate() <= twoWeeksOut) {
+                            const start = next.toJSDate();
+                            if (start >= now) {
+                                const duration = event.endDate.toJSDate() - event.startDate.toJSDate();
+                                allEvents.push({
+                                    summary: event.summary,
+                                    start: start,
+                                    end: new Date(start.getTime() + duration)
+                                });
+                            }
+                        }
+                    } else {
+                        const start = event.startDate.toJSDate();
+                        if (start >= now && start <= twoWeeksOut) {
+                            allEvents.push({ summary: event.summary, start: start, end: event.endDate.toJSDate() });
+                        }
+                    }
+                });
+
+                allEvents.sort((a, b) => a.start - b.start);
+
+                if (allEvents.length === 0) {
+                    statusEl.textContent = 'No events found for the next 14 days.';
+                    statusEl.className = 'status error';
+                    return;
+                }
+
+                // Format the text output
+                let textResult = '';
+                allEvents.forEach(ev => {
+                    const d = ev.start;
+                    const days = ['Su', 'Mo', 'Tu', 'We', 'Th', 'Fr', 'Sa'];
+                    const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+                    
+                    const dateStr = `${d.getDate()} ${months[d.getMonth()]} '${d.getFullYear().toString().slice(-2)}, ${days[d.getDay()]}`;
+                    
+                    // Time formatting
+                    const formatTime = (date) => {
+                        let h = date.getHours();
+                        let m = date.getMinutes();
+                        const ampm = h >= 12 ? 'PM' : 'AM';
+                        h = h % 12 || 12;
+                        return `${h}:${m < 10 ? '0'+m : m} ${ampm}`;
+                    };
+
+                    const timeStr = (ev.end - ev.start === 86400000) ? "All Day" : `${formatTime(ev.start)} - ${formatTime(ev.end)}`;
+                    
+                    textResult += `${dateStr} | ${timeStr} | ${ev.summary}\n`;
+                });
+
+                eventListEl.textContent = textResult;
+                outputContainer.style.display = 'block';
+                statusEl.textContent = `Success! Found ${allEvents.length} events.`;
+                statusEl.className = 'status success';
+
+            } catch (err) {
+                statusEl.textContent = err.message;
+                statusEl.className = 'status error';
+            }
+        });
+
+        document.getElementById('copyButton').addEventListener('click', () => {
+            navigator.clipboard.writeText(eventListEl.textContent);
+            const originalText = document.getElementById('copyButton').textContent;
+            document.getElementById('copyButton').textContent = 'COPIED!';
+            setTimeout(() => {
+                document.getElementById('copyButton').textContent = originalText;
+            }, 2000);
+        });
+    </script>
+</body>
+</html>
