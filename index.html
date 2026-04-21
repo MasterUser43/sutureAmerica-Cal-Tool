@@ -1,0 +1,192 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Suture America Calendar Tool</title>
+    <style>
+        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; max-width: 800px; margin: 40px auto; padding: 20px; color: #333; line-height: 1.6; }
+        .card { border: 1px solid #ddd; padding: 25px; border-radius: 8px; box-shadow: 0 2px 10px rgba(0,0,0,0.05); }
+        h1 { color: #0073aa; margin-top: 0; }
+        button { padding: 12px 20px; font-size: 16px; font-weight: bold; margin: 10px 5px 10px 0; background: #0073aa; color: white; border: none; border-radius: 4px; cursor: pointer; transition: background 0.2s; }
+        button:hover { background: #005177; }
+        button.copy-btn { background: #46b450; }
+        button.copy-btn:hover { background: #3a9e43; }
+        .output-section { border: 1px solid #ccc; padding: 15px; margin-top: 20px; border-radius: 4px; background: #fff; }
+        .output-section h3 { margin-top: 0; color: #0073aa; }
+        .event-list { background-color: #f6f7f7; padding: 15px; white-space: pre-wrap; font-family: 'Courier New', Courier, monospace; border: 1px solid #ddd; border-radius: 4px; font-size: 13px; min-height: 40px; }
+        .status { padding: 10px; border-radius: 4px; margin: 10px 0; display: none; }
+        .success { background: #e7f5ea; color: #1e4620; display: block; border-left: 5px solid #46b450; }
+        .loading { background: #f0f7ff; color: #004a6b; display: block; border-left: 5px solid #0073aa; }
+        .error { background: #fcf0f1; color: #d63638; display: block; border-left: 5px solid #d63638; }
+    </style>
+    <!-- Library to handle recurring events properly -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/ical.js/1.5.0/ical.min.js"></script>
+</head>
+<body>
+
+    <div class="card">
+        <h1>Suture America Calendar Tool</h1>
+        <p>This tool fetches your events for the next 2 weeks and separates them by calendar.</p>
+        
+        <button id="fetchButton">Fetch All Events</button>
+        
+        <div id="status" class="status"></div>
+        
+        <div id="outputContainer" style="display: none;">
+            
+            <!-- CALENDAR 1 SECTION -->
+            <div class="output-section">
+                <h3>Volunteer Calendar</h3>
+                <button class="copy-btn" onclick="copyText('eventList1', this)">Copy Volunteer List</button>
+                <div id="eventList1" class="event-list"></div>
+            </div>
+
+            <!-- CALENDAR 2 SECTION -->
+            <div class="output-section">
+                <h3>Event Calendar</h3>
+                <button class="copy-btn" onclick="copyText('eventList2', this)">Copy Events List</button>
+                <div id="eventList2" class="event-list"></div>
+            </div>
+
+        </div>
+    </div>
+
+    <script>
+        // --- MULTIPLE CALENDAR CONFIGURATION ---
+        const CALENDARS = [
+            {
+                name: "Calendar 1",
+                url: 'https://calendar.google.com/calendar/ical/sutureamerica%40gmail.com/public/basic.ics',
+                targetDiv: 'eventList1'
+            },
+            {
+                name: "Calendar 2",
+                url: 'https://calendar.google.com/calendar/ical/6ece6a621800774d05685ba3f1ab476905e7f95342632eccc111ec12abdddb2e%40group.calendar.google.com/public/basic.ics',
+                targetDiv: 'eventList2'
+            }
+        ];
+        
+        const PROXIES = [
+            'https://api.allorigins.win/raw?url=',
+            'https://api.codetabs.com/v1/proxy?quest=',
+            'https://corsproxy.io/?'
+        ];
+
+        const statusEl = document.getElementById('status');
+        const outputContainer = document.getElementById('outputContainer');
+
+        async function fetchCalendar(url) {
+            for (let i = 0; i < PROXIES.length; i++) {
+                try {
+                    const response = await fetch(PROXIES[i] + encodeURIComponent(url));
+                    if (!response.ok) continue;
+                    const data = await response.text();
+                    if (data.includes('BEGIN:VCALENDAR')) return data;
+                } catch (e) {}
+            }
+            throw new Error('Failed to fetch calendar');
+        }
+
+        function processICal(icalData) {
+            const now = new Date();
+            now.setHours(0, 0, 0, 0);
+            const twoWeeksOut = new Date();
+            twoWeeksOut.setDate(now.getDate() + 14);
+            twoWeeksOut.setHours(23, 59, 59, 999);
+
+            const events = [];
+            const jcalData = ICAL.parse(icalData);
+            const comp = new ICAL.Component(jcalData);
+            const vevents = comp.getAllSubcomponents('vevent');
+
+            vevents.forEach(vevent => {
+                const event = new ICAL.Event(vevent);
+                if (event.isRecurring()) {
+                    const it = event.iterator();
+                    let next;
+                    while ((next = it.next()) && next.toJSDate() <= twoWeeksOut) {
+                        const start = next.toJSDate();
+                        if (start >= now) {
+                            const duration = event.endDate.toJSDate() - event.startDate.toJSDate();
+                            events.push({
+                                summary: event.summary,
+                                start: start,
+                                end: new Date(start.getTime() + duration)
+                            });
+                        }
+                    }
+                } else {
+                    const start = event.startDate.toJSDate();
+                    if (start >= now && start <= twoWeeksOut) {
+                        events.push({ summary: event.summary, start: start, end: event.endDate.toJSDate() });
+                    }
+                }
+            });
+
+            events.sort((a, b) => a.start - b.start);
+            return events;
+        }
+
+        function formatEventsToText(events) {
+            if (events.length === 0) return "No events found for the next 14 days.";
+            
+            let textResult = '';
+            events.forEach(ev => {
+                const d = ev.start;
+                const days = ['Su', 'Mo', 'Tu', 'We', 'Th', 'Fr', 'Sa'];
+                const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+                const dateStr = `${d.getDate()} ${months[d.getMonth()]} '${d.getFullYear().toString().slice(-2)}, ${days[d.getDay()]}`;
+                
+                const formatTime = (date) => {
+                    let h = date.getHours();
+                    let m = date.getMinutes();
+                    const ampm = h >= 12 ? 'PM' : 'AM';
+                    h = h % 12 || 12;
+                    return `${h}:${m < 10 ? '0'+m : m} ${ampm}`;
+                };
+
+                const timeStr = (ev.end - ev.start === 86400000) ? "All Day" : `${formatTime(ev.start)} - ${formatTime(ev.end)}`;
+                textResult += `${dateStr} | ${timeStr} | ${ev.summary}\n`;
+            });
+            return textResult;
+        }
+
+        document.getElementById('fetchButton').addEventListener('click', async () => {
+            statusEl.textContent = 'Fetching data for both calendars...';
+            statusEl.className = 'status loading';
+            outputContainer.style.display = 'none';
+
+            try {
+                // Fetch and process each calendar independently
+                for (const cal of CALENDARS) {
+                    const div = document.getElementById(cal.targetDiv);
+                    div.textContent = "Loading...";
+                    
+                    const icalData = await fetchCalendar(cal.url);
+                    const events = processICal(icalData);
+                    
+                    div.textContent = formatEventsToText(events);
+                }
+
+                outputContainer.style.display = 'block';
+                statusEl.textContent = `Success! Both calendars updated.`;
+                statusEl.className = 'status success';
+
+            } catch (err) {
+                statusEl.textContent = "Error: One or more calendars could not be loaded. Ensure they are both set to 'Public'.";
+                statusEl.className = 'status error';
+            }
+        });
+
+        function copyText(divId, btn) {
+            const text = document.getElementById(divId).textContent;
+            navigator.clipboard.writeText(text);
+            
+            const originalText = btn.textContent;
+            btn.textContent = 'COPIED!';
+            setTimeout(() => { btn.textContent = originalText; }, 2000);
+        }
+    </script>
+</body>
+</html>
