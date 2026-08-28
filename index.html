@@ -68,24 +68,38 @@
         ];
         
         const PROXIES = [
-            'https://api.allorigins.win/raw?url=',
             'https://api.codetabs.com/v1/proxy?quest=',
+            'https://api.allorigins.win/raw?url=',
             'https://corsproxy.io/?'
         ];
 
         const statusEl = document.getElementById('status');
         const outputContainer = document.getElementById('outputContainer');
 
-        async function fetchCalendar(url) {
-            for (let i = 0; i < PROXIES.length; i++) {
-                try {
-                    const response = await fetch(PROXIES[i] + encodeURIComponent(url));
-                    if (!response.ok) continue;
-                    const data = await response.text();
-                    if (data.includes('BEGIN:VCALENDAR')) return data;
-                } catch (e) {}
+        async function fetchWithTimeout(url, timeoutMs) {
+            const controller = new AbortController();
+            const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+            try {
+                const response = await fetch(url, { signal: controller.signal });
+                clearTimeout(timeoutId);
+                if (!response.ok) throw new Error('HTTP Error ' + response.status);
+                const data = await response.text();
+                if (!data.includes('BEGIN:VCALENDAR')) throw new Error('Invalid calendar data');
+                return data;
+            } catch (err) {
+                clearTimeout(timeoutId);
+                throw err;
             }
-            throw new Error('Failed to fetch calendar');
+        }
+
+        async function fetchCalendar(url) {
+            // Race multiple proxies and return the first successful one
+            const promises = PROXIES.map(proxy => fetchWithTimeout(proxy + encodeURIComponent(url), 10000));
+            try {
+                return await Promise.any(promises);
+            } catch (e) {
+                throw new Error('All proxies failed to fetch calendar');
+            }
         }
 
         function processICal(icalData) {
@@ -108,18 +122,20 @@
                     while ((next = it.next()) && next.toJSDate() <= twoWeeksOut) {
                         const start = next.toJSDate();
                         if (start >= now) {
-                            const duration = event.endDate.toJSDate() - event.startDate.toJSDate();
+                            const end = event.endDate ? event.endDate.toJSDate() : start;
+                            const duration = end.getTime() - event.startDate.toJSDate().getTime();
                             events.push({
-                                summary: event.summary,
+                                summary: event.summary || 'Untitled Event',
                                 start: start,
                                 end: new Date(start.getTime() + duration)
                             });
                         }
                     }
                 } else {
-                    const start = event.startDate.toJSDate();
-                    if (start >= now && start <= twoWeeksOut) {
-                        events.push({ summary: event.summary, start: start, end: event.endDate.toJSDate() });
+                    const start = event.startDate ? event.startDate.toJSDate() : null;
+                    if (start && start >= now && start <= twoWeeksOut) {
+                        const end = event.endDate ? event.endDate.toJSDate() : start;
+                        events.push({ summary: event.summary || 'Untitled Event', start: start, end: end });
                     }
                 }
             });
